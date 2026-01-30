@@ -72,6 +72,7 @@ app.post('/unsubscribe', async (req, res) => {
 });
 
 // 3. SEND NOTIFICATION
+// 3. SEND NOTIFICATION
 app.post('/send-notification', async (req, res) => {
     let { title, body, imageBase64 } = req.body;
 
@@ -92,44 +93,48 @@ app.post('/send-notification', async (req, res) => {
             const buffer = Buffer.from(base64Data, 'base64');
             const fileName = `upload-${Date.now()}.png`;
 
-            // Upload
             const { error } = await supabase.storage
                 .from(BUCKET_NAME)
                 .upload(fileName, buffer, { contentType: 'image/png' });
 
             if (error) throw error;
 
-            // Get URL
             const { data: publicUrlData } = supabase.storage
                 .from(BUCKET_NAME)
                 .getPublicUrl(fileName);
             
             imageUrl = publicUrlData.publicUrl;
-            console.log("📸 Image uploaded:", imageUrl);
+            
+            // --- DEBUG LOG IN RENDER ---
+            console.log("--------------------------------");
+            console.log("📸 GENERATED URL:", imageUrl);
+            console.log("--------------------------------");
 
-            // --- SET TIMER FOR DELETION (5 Minutes) ---
-            // 5 minutes * 60 seconds * 1000 milliseconds = 300,000
-            setTimeout(() => {
-                deleteImage(fileName);
-            }, 300000); 
+            // Auto-delete timer (5 mins)
+            setTimeout(() => deleteImage(fileName), 300000); 
 
         } catch (err) {
             console.error("Upload Failed:", err.message);
         }
     }
 
-    // Send Push
     const { data: subs } = await supabase.from('subscriptions').select('payload');
+    
+    // --- CRITICAL: Construct Payload ---
     const payloadData = { title, body };
-    if (imageUrl) payloadData.image = imageUrl;
+    if (imageUrl) {
+        payloadData.image = imageUrl; // This adds the "image" key
+    }
 
+    // --- DEBUG LOG IN RENDER ---
     const notificationPayload = JSON.stringify(payloadData);
+    console.log("🚀 SENDING PAYLOAD:", notificationPayload);
 
     subs.forEach(row => {
         webPush.sendNotification(row.payload, notificationPayload).catch(err => console.error(err));
     });
 
-    res.json({ message: `Sent "${title}" to ${subs.length} users. Image will expire in 5 mins.` });
+    res.json({ message: `Sent. URL: ${imageUrl ? "YES" : "NO"}` });
 });
 
 const PORT = process.env.PORT || 3000;
