@@ -3,11 +3,13 @@ const webPush = require('web-push');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
-const Filter = require('bad-words'); // Import the filter library
+const Filter = require('bad-words'); 
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json());
+
+// INCREASE LIMIT for image uploads (Standard limit is too small for images)
+app.use(bodyParser.json({ limit: '10mb' })); 
 
 // --- CONFIGURATION ---
 const publicVapidKey = process.env.PUBLIC_VAPID_KEY;
@@ -18,9 +20,7 @@ const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 webPush.setVapidDetails('mailto:student@example.com', publicVapidKey, privateVapidKey);
 
-// Setup the Filter
 const filter = new Filter();
-// Optional: Add extra school-specific words to ban
 filter.addWords('sucks', 'freaking', 'poop'); 
 
 // 1. SUBSCRIBE
@@ -40,28 +40,51 @@ app.post('/unsubscribe', async (req, res) => {
     res.status(200).json({});
 });
 
-// 3. SEND NOTIFICATION (With Backend Filtering)
+// 3. SEND NOTIFICATION (With Image Upload)
 app.post('/send-notification', async (req, res) => {
-    let { title, body, image } = req.body;
+    let { title, body, imageBase64 } = req.body;
 
-    if (!title || !body) {
-        return res.status(400).json({ error: "Missing title or body" });
-    }
+    if (!title || !body) return res.status(400).json({ error: "Missing title or body" });
 
-    // --- APPLY FILTER HERE ---
-    // The server cleans the text before anyone sees it
+    // A. Clean Text
     try {
         title = filter.clean(title);
         body = filter.clean(body);
-        console.log(`Sending Cleaned Message: "${title}"`);
-    } catch (e) {
-        console.error("Filter error:", e);
+    } catch (e) { console.error("Filter error:", e); }
+
+    // B. Handle Image Upload (if exists)
+    let imageUrl = "";
+    if (imageBase64) {
+        try {
+            // 1. Remove the "data:image/png;base64," header
+            const base64Data = imageBase64.split(';base64,').pop();
+            const buffer = Buffer.from(base64Data, 'base64');
+            const fileName = `upload-${Date.now()}.png`;
+
+            // 2. Upload to Supabase Storage
+            const { data, error } = await supabase.storage
+                .from('notifications') // Ensure this bucket exists in Supabase!
+                .upload(fileName, buffer, { contentType: 'image/png' });
+
+            if (error) throw error;
+
+            // 3. Get Public URL
+            const { data: publicUrlData } = supabase.storage
+                .from('notifications')
+                .getPublicUrl(fileName);
+            
+            imageUrl = publicUrlData.publicUrl;
+            console.log("Image uploaded:", imageUrl);
+        } catch (err) {
+            console.error("Upload Failed:", err.message);
+            // We continue sending the text notification even if image fails
+        }
     }
 
+    // C. Send Push
     const { data: subs } = await supabase.from('subscriptions').select('payload');
-    
     const payloadData = { title, body };
-    if (image) payloadData.image = image;
+    if (imageUrl) payloadData.image = imageUrl;
 
     const notificationPayload = JSON.stringify(payloadData);
 
