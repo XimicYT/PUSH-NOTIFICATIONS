@@ -3,11 +3,13 @@ const webPush = require('web-push');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
+const Filter = require('bad-words'); // Import the filter library
 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
+// --- CONFIGURATION ---
 const publicVapidKey = process.env.PUBLIC_VAPID_KEY;
 const privateVapidKey = process.env.PRIVATE_VAPID_KEY;
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -15,6 +17,11 @@ const supabaseKey = process.env.SUPABASE_KEY;
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 webPush.setVapidDetails('mailto:student@example.com', publicVapidKey, privateVapidKey);
+
+// Setup the Filter
+const filter = new Filter();
+// Optional: Add extra school-specific words to ban
+filter.addWords('sucks', 'freaking', 'poop'); 
 
 // 1. SUBSCRIBE
 app.post('/subscribe', async (req, res) => {
@@ -33,17 +40,26 @@ app.post('/unsubscribe', async (req, res) => {
     res.status(200).json({});
 });
 
-// 3. SEND NOTIFICATION (Updated for Image)
+// 3. SEND NOTIFICATION (With Backend Filtering)
 app.post('/send-notification', async (req, res) => {
-    const { title, body, image } = req.body;
+    let { title, body, image } = req.body;
 
     if (!title || !body) {
         return res.status(400).json({ error: "Missing title or body" });
     }
 
+    // --- APPLY FILTER HERE ---
+    // The server cleans the text before anyone sees it
+    try {
+        title = filter.clean(title);
+        body = filter.clean(body);
+        console.log(`Sending Cleaned Message: "${title}"`);
+    } catch (e) {
+        console.error("Filter error:", e);
+    }
+
     const { data: subs } = await supabase.from('subscriptions').select('payload');
     
-    // Create payload with optional image
     const payloadData = { title, body };
     if (image) payloadData.image = image;
 
