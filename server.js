@@ -2,17 +2,29 @@ const express = require('express');
 const webpush = require('web-push');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const Filter = require('bad-words'); // Import the filter
+const Filter = require('bad-words');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-const filter = new Filter(); // Initialize it
+const filter = new Filter();
 
 app.use(cors());
 app.use(bodyParser.json());
 
-// Replace these with your generated VAPID keys
-const publicVapidKey = 'YOUR_PUBLIC_KEY_HERE';
-const privateVapidKey = 'YOUR_PRIVATE_KEY_HERE';
+// ==========================================
+// 🔧 CONFIGURATION (FILL THESE IN)
+// ==========================================
+
+// 1. VAPID KEYS (From your terminal generation)
+const publicVapidKey = 'BIHGImoLhd_7pjEUpTGUNyfXuwXFf_YbqU6Sof-hY5DYwUHeKPs-ujSAkc04BPI3W_O3unmvDDi3BN1TdjjjjCA';
+const privateVapidKey = 'bVU2jVGNesE-0kFCkXHOcTOOv8aBr6lek4V175JvIwI';
+
+// 2. SUPABASE KEYS (From Supabase Dashboard -> Project Settings -> API)
+// ⚠️ Use the "service_role" key (secret) so you have permission to DELETE users
+const supabaseUrl = 'https://wsrnoswpyxlftrojflvr.supabase.co'; 
+const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indzcm5vc3dweXhsZnRyb2pmbHZyIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2OTY5Nzk4MCwiZXhwIjoyMDg1MjczOTgwfQ.-xFhKtmqsTsHi0MzLp1O44j9IuxPc3ZiP96xuswSows'; 
+
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 webpush.setVapidDetails(
   'mailto:test@test.com',
@@ -20,61 +32,89 @@ webpush.setVapidDetails(
   privateVapidKey
 );
 
-// Store subscriptions in memory (Note: This wipes when server restarts)
-let subscriptions = [];
+// ==========================================
+// 🚀 ROUTES
+// ==========================================
 
-// 1. Subscribe Route
-app.post('/subscribe', (req, res) => {
+// 1. Subscribe Route (Saves to Supabase)
+app.post('/subscribe', async (req, res) => {
   const subscription = req.body;
-  subscriptions.push(subscription);
-  res.status(201).json({});
-  console.log("New Subscriber!");
+
+  // Insert into Supabase table 'subscriptions'
+  // Make sure your table has a column named 'payload' of type JSONB
+  const { error } = await supabase
+    .from('subscriptions')
+    .insert([{ payload: subscription }]);
+
+  if (error) {
+    console.error('Error saving subscription:', error);
+    res.status(500).json({ error: 'Failed to save subscription' });
+  } else {
+    console.log('✅ New Subscriber added to DB');
+    res.status(201).json({});
+  }
 });
 
-// 2. Send Notification Route (FIXED)
-app.post('/send-notification', (req, res) => {
-    // SECURITY FIX: Ensure we have strings, default to space if empty
-    const rawTitle = req.body.title || "New Message";
-    const rawMessage = req.body.message || " "; 
+// 2. Send Notification (With 410 Cleanup)
+app.post('/send-notification', async (req, res) => {
+  const rawTitle = req.body.title || "New Message";
+  const rawMessage = req.body.message || " ";
+  const actions = req.body.actions || [];
 
-    // Clean the text
-    const cleanTitle = filter.clean(rawTitle);
-    const cleanMessage = filter.clean(rawMessage);
-    const cleanImage = req.body.image || null;
-    const actions = req.body.actions || [];
+  // Clean bad words
+  const cleanTitle = filter.clean(rawTitle);
+  const cleanMessage = filter.clean(rawMessage);
 
-    const payload = JSON.stringify({ 
-        title: cleanTitle, 
-        body: cleanMessage,
-        image: cleanImage,
-        actions: actions
-    });
+  const notificationPayload = JSON.stringify({
+    title: cleanTitle,
+    body: cleanMessage,
+    actions: actions
+  });
 
-    console.log(`Sending: ${cleanTitle} - ${cleanMessage}`);
+  // Fetch all subscribers from Supabase
+  const { data: rows, error } = await supabase
+    .from('subscriptions')
+    .select('payload');
 
-    // Loop through all subscribers
-    const promises = subscriptions.map((sub, index) => {
-        return webpush.sendNotification(sub, payload)
-            .catch(err => {
-                if (err.statusCode === 410) {
-                    // 410 means the user blocked us or cleared data.
-                    console.log(`Endpoint expired/unsubscribed. removing...`);
-                    // Ideally, remove from array here (simple version doesn't, to avoid index errors during loop)
-                    return; 
-                }
-                console.error("Push Error:", err.statusCode);
-            });
-    });
+  if (error) {
+    console.error('Database Error:', error);
+    return res.status(500).json({ error: error.message });
+  }
 
-    Promise.all(promises).then(() => res.json({ success: true }));
+  console.log(`\n📢 Sending to ${rows.length} subscribers...`);
+
+  // Send to everyone
+  const promises = rows.map((row) => {
+    const subscription = row.payload;
+
+    return webpush.sendNotification(subscription, notificationPayload)
+      .catch((err) => {
+        // IF USER IS GONE (410) OR NOT FOUND (404) -> DELETE THEM
+        if (err.statusCode === 410 || err.statusCode === 404) {
+          console.log(`💀 Cleaning up dead subscription: ${subscription.endpoint.slice(-10)}`);
+          
+          // Delete based on the endpoint URL inside the JSON
+          return supabase
+            .from('subscriptions')
+            .delete()
+            .eq('payload->>endpoint', subscription.endpoint);
+        } else {
+          console.error('Push Error:', err.statusCode);
+        }
+      });
+  });
+
+  await Promise.all(promises);
+  res.json({ success: true });
 });
 
-// 3. Log Responses (The Yes/No Click Handler)
+// 3. Log Response (Handles Yes/No Clicks)
 app.post('/log-response', (req, res) => {
     const { action } = req.body;
-    console.log(`\n💬 USER CLICKED: ${action ? action.toUpperCase() : "Unknown"}`);
+    console.log(`\n💬 RESPONSE RECEIVED: ${action ? action.toUpperCase() : 'UNKNOWN'}`);
     res.json({ success: true });
 });
 
+// Start Server
 const PORT = 3000;
 app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
