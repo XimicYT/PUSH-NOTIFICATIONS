@@ -1,120 +1,112 @@
 const express = require('express');
-const webpush = require('web-push');
+const webPush = require('web-push');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const Filter = require('bad-words');
 const { createClient } = require('@supabase/supabase-js');
+const Filter = require('bad-words'); 
 
 const app = express();
-const filter = new Filter();
-
 app.use(cors());
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '10mb' })); 
 
-// ==========================================
-// 🔧 CONFIGURATION (FILL THESE IN)
-// ==========================================
-
-// 1. VAPID KEYS (From your terminal generation)
-const publicVapidKey = 'BIHGImoLhd_7pjEUpTGUNyfXuwXFf_YbqU6Sof-hY5DYwUHeKPs-ujSAkc04BPI3W_O3unmvDDi3BN1TdjjjjCA';
-const privateVapidKey = 'bVU2jVGNesE-0kFCkXHOcTOOv8aBr6lek4V175JvIwI';
-
-// 2. SUPABASE KEYS (From Supabase Dashboard -> Project Settings -> API)
-// ⚠️ Use the "service_role" key (secret) so you have permission to DELETE users
-const supabaseUrl = 'https://wsrnoswpyxlftrojflvr.supabase.co'; 
-const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indzcm5vc3dweXhsZnRyb2pmbHZyIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2OTY5Nzk4MCwiZXhwIjoyMDg1MjczOTgwfQ.-xFhKtmqsTsHi0MzLp1O44j9IuxPc3ZiP96xuswSows'; 
+const publicVapidKey = process.env.PUBLIC_VAPID_KEY;
+const privateVapidKey = process.env.PRIVATE_VAPID_KEY;
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
+const BUCKET_NAME = 'notifications';
 
 const supabase = createClient(supabaseUrl, supabaseKey);
+webPush.setVapidDetails('mailto:student@example.com', publicVapidKey, privateVapidKey);
 
-webpush.setVapidDetails(
-  'mailto:test@test.com',
-  publicVapidKey,
-  privateVapidKey
-);
+const filter = new Filter();
+// Add custom bad words here if needed
+filter.addWords('sucks', 'freaking', 'poop'); 
 
-// ==========================================
-// 🚀 ROUTES
-// ==========================================
+async function deleteImage(fileName) {
+    await supabase.storage.from(BUCKET_NAME).remove([fileName]);
+}
 
-// 1. Subscribe Route (Saves to Supabase)
+async function cleanOldFiles() {
+    console.log("🧹 Cleaning old images...");
+    const { data: files } = await supabase.storage.from(BUCKET_NAME).list();
+    if (files && files.length > 0) {
+        const fileNames = files.map(f => f.name);
+        await supabase.storage.from(BUCKET_NAME).remove(fileNames);
+    }
+}
+cleanOldFiles();
+
 app.post('/subscribe', async (req, res) => {
-  const subscription = req.body;
-
-  // Insert into Supabase table 'subscriptions'
-  // Make sure your table has a column named 'payload' of type JSONB
-  const { error } = await supabase
-    .from('subscriptions')
-    .insert([{ payload: subscription }]);
-
-  if (error) {
-    console.error('Error saving subscription:', error);
-    res.status(500).json({ error: 'Failed to save subscription' });
-  } else {
-    console.log('✅ New Subscriber added to DB');
+    const subData = req.body;
+    await supabase.from('subscriptions').delete().match({ payload: subData });
+    const { error } = await supabase.from('subscriptions').insert({ payload: subData });
+    if (error) return res.status(500).json({ error: error.message });
     res.status(201).json({});
-  }
 });
 
-// 2. Send Notification (With 410 Cleanup)
+app.post('/unsubscribe', async (req, res) => {
+    const subData = req.body;
+    const { error } = await supabase.from('subscriptions').delete().match({ payload: subData });
+    if (error) return res.status(500).json({ error: error.message });
+    res.status(200).json({});
+});
+
 app.post('/send-notification', async (req, res) => {
-  const rawTitle = req.body.title || "New Message";
-  const rawMessage = req.body.message || " ";
-  const actions = req.body.actions || [];
+    let { senderName, title, body, imageBase64 } = req.body;
 
-  // Clean bad words
-  const cleanTitle = filter.clean(rawTitle);
-  const cleanMessage = filter.clean(rawMessage);
+    if (!title || !body) return res.status(400).json({ error: "Missing title or body" });
 
-  const notificationPayload = JSON.stringify({
-    title: cleanTitle,
-    body: cleanMessage,
-    actions: actions
-  });
+    // Filter Bad Words
+    try {
+        title = filter.clean(title);
+        body = filter.clean(body);
+        senderName = filter.clean(senderName || "Admin");
+    } catch (e) { console.error("Filter error:", e); }
 
-  // Fetch all subscribers from Supabase
-  const { data: rows, error } = await supabase
-    .from('subscriptions')
-    .select('payload');
+    // FORMAT THE TITLE: "SenderName: Title"
+    const finalTitle = `${senderName}: ${title}`;
 
-  if (error) {
-    console.error('Database Error:', error);
-    return res.status(500).json({ error: error.message });
-  }
+    let imageUrl = "";
 
-  console.log(`\n📢 Sending to ${rows.length} subscribers...`);
+    if (imageBase64) {
+        try {
+            const base64Data = imageBase64.split(';base64,').pop();
+            const buffer = Buffer.from(base64Data, 'base64');
+            const fileName = `upload-${Date.now()}.png`;
 
-  // Send to everyone
-  const promises = rows.map((row) => {
-    const subscription = row.payload;
+            const { error } = await supabase.storage
+                .from(BUCKET_NAME)
+                .upload(fileName, buffer, { contentType: 'image/png' });
 
-    return webpush.sendNotification(subscription, notificationPayload)
-      .catch((err) => {
-        // IF USER IS GONE (410) OR NOT FOUND (404) -> DELETE THEM
-        if (err.statusCode === 410 || err.statusCode === 404) {
-          console.log(`💀 Cleaning up dead subscription: ${subscription.endpoint.slice(-10)}`);
-          
-          // Delete based on the endpoint URL inside the JSON
-          return supabase
-            .from('subscriptions')
-            .delete()
-            .eq('payload->>endpoint', subscription.endpoint);
-        } else {
-          console.error('Push Error:', err.statusCode);
+            if (error) throw error;
+
+            const { data: publicUrlData } = supabase.storage
+                .from(BUCKET_NAME)
+                .getPublicUrl(fileName);
+            
+            imageUrl = publicUrlData.publicUrl;
+            
+            // Delete image after 5 minutes
+            setTimeout(() => deleteImage(fileName), 300000); 
+        } catch (err) {
+            console.error("Upload Failed:", err.message);
         }
-      });
-  });
+    }
 
-  await Promise.all(promises);
-  res.json({ success: true });
+    const { data: subs } = await supabase.from('subscriptions').select('payload');
+    
+    // Construct final payload
+    const payloadData = { title: finalTitle, body };
+    if (imageUrl) payloadData.image = imageUrl;
+
+    const notificationPayload = JSON.stringify(payloadData);
+
+    subs.forEach(row => {
+        webPush.sendNotification(row.payload, notificationPayload).catch(err => console.error(err));
+    });
+
+    res.json({ message: `Sent "${finalTitle}" to ${subs.length} users.` });
 });
 
-// 3. Log Response (Handles Yes/No Clicks)
-app.post('/log-response', (req, res) => {
-    const { action } = req.body;
-    console.log(`\n💬 RESPONSE RECEIVED: ${action ? action.toUpperCase() : 'UNKNOWN'}`);
-    res.json({ success: true });
-});
-
-// Start Server
-const PORT = 3000;
-app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
