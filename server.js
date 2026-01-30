@@ -44,7 +44,7 @@ app.post('/broadcast-test', async (req, res) => {
     const { data: subs } = await supabase.from('subscriptions').select('payload');
     const notificationPayload = JSON.stringify({ 
         title: 'Test Message', 
-        body: 'This is a test sent from the dashboard!' 
+        body: '🚨🚨🚨 !!ATTENTION!!! 🚨🚨🚨' 
     });
 
     subs.forEach(row => {
