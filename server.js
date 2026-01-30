@@ -28,10 +28,9 @@ app.post('/subscribe', async (req, res) => {
     res.status(201).json({});
 });
 
-// 2. UNSUBSCRIBE (New!)
+// 2. UNSUBSCRIBE
 app.post('/unsubscribe', async (req, res) => {
     const subData = req.body;
-    // Find the user with this specific subscription info and delete them
     const { error } = await supabase.from('subscriptions').delete().match({ payload: subData });
     
     if (error) return res.status(500).json({ error: error.message });
@@ -39,22 +38,29 @@ app.post('/unsubscribe', async (req, res) => {
     res.status(200).json({});
 });
 
-// 3. MANUAL TEST BLAST (New!)
-app.post('/broadcast-test', async (req, res) => {
+// 3. FLEXIBLE NOTIFICATION SENDER (UPDATED)
+app.post('/send-notification', async (req, res) => {
+    const { title, body } = req.body;
+
+    if (!title || !body) {
+        return res.status(400).json({ error: "Missing title or body" });
+    }
+
     const { data: subs } = await supabase.from('subscriptions').select('payload');
+    
     const notificationPayload = JSON.stringify({ 
-        title: 'Test Message', 
-        body: '🚨🚨🚨 !!ATTENTION!!! 🚨🚨🚨' 
+        title: title, 
+        body: body 
     });
 
     subs.forEach(row => {
         webPush.sendNotification(row.payload, notificationPayload).catch(err => console.error(err));
     });
 
-    res.json({ message: `Sent test to ${subs.length} users.` });
+    res.json({ message: `Sent "${title}" to ${subs.length} users.` });
 });
 
-// 4. CRON JOB TRIGGER (Keep this safe!)
+// 4. CRON JOB TRIGGER
 app.get('/trigger-push', async (req, res) => {
     if (req.query.secret !== process.env.TRIGGER_SECRET) return res.status(401).send('Unauthorized');
     
