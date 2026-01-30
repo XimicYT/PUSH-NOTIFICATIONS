@@ -121,6 +121,17 @@ app.post('/send-notification', async (req, res) => {
 
     res.json({ message: `Sent "${finalTitle}" to ${subs.length} users.` });
 });
+// --- NEW: Handle Quick Responses ---
+app.post('/log-response', (req, res) => {
+    const { action, replyId } = req.body;
+    
+    // This will show up in your Render Logs
+    console.log(`\n💬 RESPONSE RECEIVED:`);
+    console.log(`> Action: ${action.toUpperCase()}`);
+    console.log(`> Time: ${new Date().toLocaleTimeString()}`);
+    console.log(`--------------------------`);
 
+    res.json({ success: true });
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
