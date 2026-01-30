@@ -7,8 +7,6 @@ const Filter = require('bad-words');
 
 const app = express();
 app.use(cors());
-
-// INCREASE LIMIT for image uploads (Standard limit is too small for images)
 app.use(bodyParser.json({ limit: '10mb' })); 
 
 // --- CONFIGURATION ---
@@ -16,12 +14,45 @@ const publicVapidKey = process.env.PUBLIC_VAPID_KEY;
 const privateVapidKey = process.env.PRIVATE_VAPID_KEY;
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
+const BUCKET_NAME = 'notifications'; // Verify this matches your Supabase bucket name
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 webPush.setVapidDetails('mailto:student@example.com', publicVapidKey, privateVapidKey);
 
 const filter = new Filter();
 filter.addWords('sucks', 'freaking', 'poop'); 
+
+// --- CLEANUP HELPER ---
+// Deletes a specific file from Supabase
+async function deleteImage(fileName) {
+    console.log(`🗑️ Attempting to auto-delete: ${fileName}...`);
+    const { data, error } = await supabase.storage
+        .from(BUCKET_NAME)
+        .remove([fileName]);
+    
+    if (error) {
+        console.error("❌ Failed to delete image:", error.message);
+    } else {
+        console.log("✅ Image deleted successfully.");
+    }
+}
+
+// --- OPTIONAL: CLEANUP ON STARTUP ---
+// If the server restarts, this clears out old junk so you don't waste storage.
+async function cleanOldFiles() {
+    console.log("🧹 Server starting: Checking for old images to clean...");
+    const { data: files, error } = await supabase.storage.from(BUCKET_NAME).list();
+    if (files && files.length > 0) {
+        // Simple strategy: Delete EVERYTHING in the bucket on restart
+        // (Since images are temporary anyway)
+        const fileNames = files.map(f => f.name);
+        await supabase.storage.from(BUCKET_NAME).remove(fileNames);
+        console.log(`🧹 Cleaned up ${fileNames.length} old images from storage.`);
+    }
+}
+// Run cleanup immediately when server starts
+cleanOldFiles();
+
 
 // 1. SUBSCRIBE
 app.post('/subscribe', async (req, res) => {
@@ -40,48 +71,54 @@ app.post('/unsubscribe', async (req, res) => {
     res.status(200).json({});
 });
 
-// 3. SEND NOTIFICATION (With Image Upload)
+// 3. SEND NOTIFICATION
 app.post('/send-notification', async (req, res) => {
     let { title, body, imageBase64 } = req.body;
 
     if (!title || !body) return res.status(400).json({ error: "Missing title or body" });
 
-    // A. Clean Text
+    // Filter Profanity
     try {
         title = filter.clean(title);
         body = filter.clean(body);
     } catch (e) { console.error("Filter error:", e); }
 
-    // B. Handle Image Upload (if exists)
     let imageUrl = "";
+
+    // Handle Image Upload
     if (imageBase64) {
         try {
-            // 1. Remove the "data:image/png;base64," header
             const base64Data = imageBase64.split(';base64,').pop();
             const buffer = Buffer.from(base64Data, 'base64');
             const fileName = `upload-${Date.now()}.png`;
 
-            // 2. Upload to Supabase Storage
-            const { data, error } = await supabase.storage
-                .from('notifications') // Ensure this bucket exists in Supabase!
+            // Upload
+            const { error } = await supabase.storage
+                .from(BUCKET_NAME)
                 .upload(fileName, buffer, { contentType: 'image/png' });
 
             if (error) throw error;
 
-            // 3. Get Public URL
+            // Get URL
             const { data: publicUrlData } = supabase.storage
-                .from('notifications')
+                .from(BUCKET_NAME)
                 .getPublicUrl(fileName);
             
             imageUrl = publicUrlData.publicUrl;
-            console.log("Image uploaded:", imageUrl);
+            console.log("📸 Image uploaded:", imageUrl);
+
+            // --- SET TIMER FOR DELETION (5 Minutes) ---
+            // 5 minutes * 60 seconds * 1000 milliseconds = 300,000
+            setTimeout(() => {
+                deleteImage(fileName);
+            }, 300000); 
+
         } catch (err) {
             console.error("Upload Failed:", err.message);
-            // We continue sending the text notification even if image fails
         }
     }
 
-    // C. Send Push
+    // Send Push
     const { data: subs } = await supabase.from('subscriptions').select('payload');
     const payloadData = { title, body };
     if (imageUrl) payloadData.image = imageUrl;
@@ -92,7 +129,7 @@ app.post('/send-notification', async (req, res) => {
         webPush.sendNotification(row.payload, notificationPayload).catch(err => console.error(err));
     });
 
-    res.json({ message: `Sent "${title}" to ${subs.length} users.` });
+    res.json({ message: `Sent "${title}" to ${subs.length} users. Image will expire in 5 mins.` });
 });
 
 const PORT = process.env.PORT || 3000;
