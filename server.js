@@ -19,7 +19,6 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 webPush.setVapidDetails('mailto:student@example.com', publicVapidKey, privateVapidKey);
 
 const filter = new Filter();
-// Add custom bad words here if needed
 filter.addWords('sucks', 'freaking', 'poop'); 
 
 async function deleteImage(fileName) {
@@ -52,22 +51,20 @@ app.post('/unsubscribe', async (req, res) => {
 });
 
 app.post('/send-notification', async (req, res) => {
-    let { senderName, title, body, imageBase64 } = req.body;
+    let { senderName, title, body, imageBase64, actionType } = req.body;
 
     if (!title || !body) return res.status(400).json({ error: "Missing title or body" });
 
-    // Filter Bad Words
     try {
         title = filter.clean(title);
         body = filter.clean(body);
         senderName = filter.clean(senderName || "Admin");
     } catch (e) { console.error("Filter error:", e); }
 
-    // FORMAT THE TITLE: "SenderName: Title"
     const finalTitle = `${senderName}: ${title}`;
-
     let imageUrl = "";
 
+    // 1. Image Upload Logic
     if (imageBase64) {
         try {
             const base64Data = imageBase64.split(';base64,').pop();
@@ -86,17 +83,34 @@ app.post('/send-notification', async (req, res) => {
             
             imageUrl = publicUrlData.publicUrl;
             
-            // Delete image after 5 minutes
             setTimeout(() => deleteImage(fileName), 300000); 
         } catch (err) {
             console.error("Upload Failed:", err.message);
         }
     }
 
+    // 2. Action Buttons Logic
+    let actions = [];
+    if (actionType === 'yes-no') {
+        actions = [
+            { action: 'yes', title: '✅ Yes' },
+            { action: 'no', title: '❌ No' }
+        ];
+    } else if (actionType === 'acknowledge') {
+        actions = [
+            { action: 'ok', title: '👍 Got it' }
+        ];
+    } else if (actionType === 'poll') {
+        actions = [
+            { action: 'vote-a', title: '🅰 Option A' },
+            { action: 'vote-b', title: '🅱 Option B' }
+        ];
+    }
+
     const { data: subs } = await supabase.from('subscriptions').select('payload');
     
-    // Construct final payload
-    const payloadData = { title: finalTitle, body };
+    // 3. Construct Payload
+    const payloadData = { title: finalTitle, body, actions };
     if (imageUrl) payloadData.image = imageUrl;
 
     const notificationPayload = JSON.stringify(payloadData);
