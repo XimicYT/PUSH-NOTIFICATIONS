@@ -8,7 +8,6 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// --- CONFIGURATION ---
 const publicVapidKey = process.env.PUBLIC_VAPID_KEY;
 const privateVapidKey = process.env.PRIVATE_VAPID_KEY;
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -20,9 +19,7 @@ webPush.setVapidDetails('mailto:student@example.com', publicVapidKey, privateVap
 // 1. SUBSCRIBE
 app.post('/subscribe', async (req, res) => {
     const subData = req.body;
-    // Delete if exists first to avoid duplicates
     await supabase.from('subscriptions').delete().match({ payload: subData });
-    
     const { error } = await supabase.from('subscriptions').insert({ payload: subData });
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json({});
@@ -32,15 +29,13 @@ app.post('/subscribe', async (req, res) => {
 app.post('/unsubscribe', async (req, res) => {
     const subData = req.body;
     const { error } = await supabase.from('subscriptions').delete().match({ payload: subData });
-    
     if (error) return res.status(500).json({ error: error.message });
-    console.log("User unsubscribed");
     res.status(200).json({});
 });
 
-// 3. FLEXIBLE NOTIFICATION SENDER (UPDATED)
+// 3. SEND NOTIFICATION (Updated for Image)
 app.post('/send-notification', async (req, res) => {
-    const { title, body } = req.body;
+    const { title, body, image } = req.body;
 
     if (!title || !body) {
         return res.status(400).json({ error: "Missing title or body" });
@@ -48,33 +43,17 @@ app.post('/send-notification', async (req, res) => {
 
     const { data: subs } = await supabase.from('subscriptions').select('payload');
     
-    const notificationPayload = JSON.stringify({ 
-        title: title, 
-        body: body 
-    });
+    // Create payload with optional image
+    const payloadData = { title, body };
+    if (image) payloadData.image = image;
+
+    const notificationPayload = JSON.stringify(payloadData);
 
     subs.forEach(row => {
         webPush.sendNotification(row.payload, notificationPayload).catch(err => console.error(err));
     });
 
     res.json({ message: `Sent "${title}" to ${subs.length} users.` });
-});
-
-// 4. CRON JOB TRIGGER
-app.get('/trigger-push', async (req, res) => {
-    if (req.query.secret !== process.env.TRIGGER_SECRET) return res.status(401).send('Unauthorized');
-    
-    const { data: subs } = await supabase.from('subscriptions').select('payload');
-    const notificationPayload = JSON.stringify({ 
-        title: 'School Reminder', 
-        body: 'It is 3:20 PM! Time to pack up.' 
-    });
-
-    subs.forEach(row => {
-        webPush.sendNotification(row.payload, notificationPayload).catch(err => console.error(err));
-    });
-
-    res.send(`Triggered for ${subs.length} users.`);
 });
 
 const PORT = process.env.PORT || 3000;
