@@ -19,6 +19,7 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 webPush.setVapidDetails('mailto:student@example.com', publicVapidKey, privateVapidKey);
 
 const filter = new Filter();
+// Add custom bad words here if needed
 filter.addWords('sucks', 'freaking', 'poop'); 
 
 async function deleteImage(fileName) {
@@ -26,7 +27,7 @@ async function deleteImage(fileName) {
 }
 
 async function cleanOldFiles() {
-    console.log("🧹 Server starting: Cleaning old images...");
+    console.log("🧹 Cleaning old images...");
     const { data: files } = await supabase.storage.from(BUCKET_NAME).list();
     if (files && files.length > 0) {
         const fileNames = files.map(f => f.name);
@@ -51,14 +52,19 @@ app.post('/unsubscribe', async (req, res) => {
 });
 
 app.post('/send-notification', async (req, res) => {
-    let { title, body, imageBase64 } = req.body;
+    let { senderName, title, body, imageBase64 } = req.body;
 
     if (!title || !body) return res.status(400).json({ error: "Missing title or body" });
 
+    // Filter Bad Words
     try {
         title = filter.clean(title);
         body = filter.clean(body);
+        senderName = filter.clean(senderName || "Admin");
     } catch (e) { console.error("Filter error:", e); }
+
+    // FORMAT THE TITLE: "SenderName: Title"
+    const finalTitle = `${senderName}: ${title}`;
 
     let imageUrl = "";
 
@@ -80,6 +86,7 @@ app.post('/send-notification', async (req, res) => {
             
             imageUrl = publicUrlData.publicUrl;
             
+            // Delete image after 5 minutes
             setTimeout(() => deleteImage(fileName), 300000); 
         } catch (err) {
             console.error("Upload Failed:", err.message);
@@ -87,7 +94,9 @@ app.post('/send-notification', async (req, res) => {
     }
 
     const { data: subs } = await supabase.from('subscriptions').select('payload');
-    const payloadData = { title, body };
+    
+    // Construct final payload
+    const payloadData = { title: finalTitle, body };
     if (imageUrl) payloadData.image = imageUrl;
 
     const notificationPayload = JSON.stringify(payloadData);
@@ -96,7 +105,7 @@ app.post('/send-notification', async (req, res) => {
         webPush.sendNotification(row.payload, notificationPayload).catch(err => console.error(err));
     });
 
-    res.json({ message: `Sent "${title}" to ${subs.length} users.` });
+    res.json({ message: `Sent "${finalTitle}" to ${subs.length} users.` });
 });
 
 const PORT = process.env.PORT || 3000;
