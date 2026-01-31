@@ -10,6 +10,7 @@ app.use(cors());
 app.use(bodyParser.json({ limit: '10mb' })); 
 
 // --- CONFIGURATION ---
+// Ensure these environment variables are set in your Render dashboard
 const publicVapidKey = process.env.PUBLIC_VAPID_KEY;
 const privateVapidKey = process.env.PRIVATE_VAPID_KEY;
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -58,13 +59,13 @@ app.post('/unsubscribe', async (req, res) => {
 
 // 3. GET SUBSCRIBERS (For Admin Dropdown)
 app.get('/subscribers', async (req, res) => {
-    // Selects ID and Name only
+    // Selects ID and Name only to populate the list
     const { data, error } = await supabase.from('subscriptions').select('id, name');
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
 });
 
-// 4. SEND NOTIFICATION (Handles Targeting)
+// 4. SEND NOTIFICATION (Handles Targeting & High Priority)
 app.post('/send-notification', async (req, res) => {
     let { senderName, title, body, imageBase64, targetId } = req.body;
 
@@ -111,16 +112,22 @@ app.post('/send-notification', async (req, res) => {
         image: imageUrl 
     });
 
-    // Send to web-push
+    // Send to web-push with HIGH PRIORITY headers
     const sendPromises = subs.map(row => {
         if (!row.payload) return Promise.resolve();
-        return webPush.sendNotification(row.payload, notificationPayload)
-            .catch(err => {
-                // If 410 (Gone) or 404, delete from DB
-                if (err.statusCode === 410 || err.statusCode === 404) {
-                   supabase.from('subscriptions').delete().filter('payload->>endpoint', 'eq', row.payload.endpoint);
-                }
-            });
+        
+        return webPush.sendNotification(row.payload, notificationPayload, {
+            headers: {
+                'Urgency': 'high', // Force Android to wake up
+                'TTL': '60'        // Time to live
+            }
+        })
+        .catch(err => {
+            // If 410 (Gone) or 404, delete from DB
+            if (err.statusCode === 410 || err.statusCode === 404) {
+               supabase.from('subscriptions').delete().filter('payload->>endpoint', 'eq', row.payload.endpoint);
+            }
+        });
     });
 
     await Promise.all(sendPromises);
